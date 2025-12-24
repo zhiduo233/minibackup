@@ -1,19 +1,40 @@
-CMakeLists.txt.user
-CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
-Makefile
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-_deps
-CMakeUserPresets.json
+# ==========================
+# 1. CLion & IDE 特有配置
+# ==========================
+.idea/
+.vscode/
+*.swp
+*.swo
 
-# CLion
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#cmake-build-*
+# ==========================
+# 2. CMake 构建产物 (CLion 默认生成的文件夹)
+# ==========================
+cmake-build-*/
+build/
+bin/
+lib/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+*.cmake
+install_manifest.txt
+
+# ==========================
+# 3. 编译中间文件 & 可执行文件
+# ==========================
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# ==========================
+# 4. 系统垃圾文件 (防止队友是 Mac/Windows 混用)
+# ==========================
+.DS_Store
+Thumbs.db
