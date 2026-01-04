@@ -9,10 +9,11 @@
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
+#include <filesystem> // [新增]
 
 class CRC32 {
 public:
-    // [新增] 计算内存数据的 CRC32 (返回原始整数，用于打包)
+    // 计算内存数据的 CRC32
     static uint32_t calculate(const char* data, size_t size) {
         uint32_t crc = 0xFFFFFFFF;
         for (size_t i = 0; i < size; ++i) {
@@ -27,9 +28,12 @@ public:
         return ~crc;
     }
 
-    // [保留] 计算文件的 CRC32 值，返回 Hex 字符串 (用于旧的 verify)
-    static std::string getFileCRC(const std::string& filepath) {
+    // [修改] 参数改为 std::filesystem::path，完美支持中文
+    static std::string getFileCRC(const std::filesystem::path& filepath) {
+        // 直接传入 path 对象，Windows 下会自动调用宽字符接口
         std::ifstream file(filepath, std::ios::binary);
+
+        // 如果打开失败，返回全0
         if (!file.is_open()) return "00000000";
 
         char buffer[4096];

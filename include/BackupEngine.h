@@ -70,7 +70,7 @@ class BackupEngine {
 public:
     // === 基础功能 ===
     static void backup(const std::string& srcPath, const std::string& destPath);
-    static bool verify(const std::string& destPath);
+    static std::string verify(const std::string& dest);
     static void restore(const std::string& srcPath, const std::string& destPath);
 
     // === 扩展功能：打包/解包 (含加密) ===

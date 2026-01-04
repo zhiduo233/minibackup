@@ -4,26 +4,24 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <numeric> // for std::swap
+#include <numeric>
+#include <chrono> // [新增] 用于时间转换
 
-#include <sys/stat.h>
-#include <sys/types.h>
-
+// [修改] 移除了 sys/stat.h 等底层头文件，改用 C++ 标准库
 #ifdef _WIN32
     #include <sys/utime.h>
     #define chown(path, uid, gid) 0
 #else
     #include <unistd.h>
     #include <utime.h>
+    #include <sys/stat.h>
+    #include <sys/types.h>
 #endif
 
 // ==========================================
-// 🛠️ 辅助函数：强制 Path 转 UTF-8 string
-// 解决 Windows 下 .string() 变成 GBK 的问题
+// 🛠️ 辅助工具
 // ==========================================
 std::string pathToString(const fs::path& p) {
-    // C++20 引入了 std::u8string，C++17 返回 std::string
-    // 这里做一个兼容处理
 #if __cplusplus >= 202002L
     const auto& u8str = p.u8string();
     return std::string(u8str.begin(), u8str.end());
@@ -32,11 +30,35 @@ std::string pathToString(const fs::path& p) {
 #endif
 }
 
-// ==========================================
-// 核心算法实现区
-// ==========================================
+// 这种方式比 stat/_wstat 更稳定，支持 Windows 中文路径
+void fillMetadata(const fs::path& fullPath, FileRecord& record) {
+    std::error_code ec; // 用于捕获错误，防止程序崩溃
 
-// --- 算法 1: RC4 ---
+    // 1. 获取大小
+    record.size = fs::file_size(fullPath, ec);
+    if (ec) record.size = 0;
+
+    // 2. 获取时间 (这是最稳的写法)
+    auto ftime = fs::last_write_time(fullPath, ec);
+    if (!ec) {
+        // 将 file_time_type 转换为系统时间戳 (Unix Timestamp)
+        auto sctp = std::chrono::time_point_cast<std::chrono::seconds>(
+            ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now()
+        );
+        record.mtime = sctp.time_since_epoch().count();
+    } else {
+        record.mtime = 0;
+    }
+
+    // 3. 填充默认权限 (Windows 下无实际意义，但为了兼容性保留)
+    record.mode = 0644;
+    record.uid = 0;
+    record.gid = 0;
+}
+
+// ==========================================
+// 核心算法
+// ==========================================
 class RC4 {
     unsigned char S[256]{};
     int i = 0, j = 0;
@@ -61,7 +83,6 @@ public:
     }
 };
 
-// --- 算法 2: XOR ---
 void xorEncrypt(char* buffer, const size_t size, const std::string& password) {
     if (password.empty()) return;
     const size_t pwdLen = password.length();
@@ -70,20 +91,18 @@ void xorEncrypt(char* buffer, const size_t size, const std::string& password) {
     }
 }
 
-// --- 算法 3: 筛选器 ---
+// 筛选器逻辑
 bool checkFilter(const FileRecord& record, const FilterOptions& opts) {
-    // 1. 名字筛选 (使用 u8path 确保正确解析 UTF-8 字符串)
+    // 1. 文件名筛选
     if (!opts.nameContains.empty()) {
-        std::string filename = fs::path(fs::u8path(record.relPath)).filename().string(); // 这里 filename 转回 native 没关系，只要 find 能匹配
-        // 或者更严谨一点，全程 UTF-8:
         std::string u8fname = pathToString(fs::path(fs::u8path(record.relPath)).filename());
         if (u8fname.find(opts.nameContains) == std::string::npos) return false;
     }
-
+    // 2. 路径筛选
     if (!opts.pathContains.empty()) {
         if (record.relPath.find(opts.pathContains) == std::string::npos) return false;
     }
-
+    // 3. 类型筛选
     if (opts.type != -1) {
         if (opts.type == 0 && record.type != FileType::REGULAR) return false;
         if (opts.type == 1 && record.type != FileType::DIRECTORY) return false;
@@ -92,22 +111,24 @@ bool checkFilter(const FileRecord& record, const FilterOptions& opts) {
 
     if (record.type == FileType::DIRECTORY) return true;
 
+    // 4. 大小筛选 (只针对文件)
     if (record.type == FileType::REGULAR) {
+        // 比如 minSize=1000, size=500 -> 500 < 1000 -> false (过滤掉)
         if (opts.minSize > 0 && record.size < opts.minSize) return false;
         if (opts.maxSize > 0 && record.size > opts.maxSize) return false;
     }
 
+    // 5. 时间筛选
+    // opts.startTime 是 "现在减去X天" 的时间戳
+    // 如果文件的修改时间(mtime) 小于 startTime，说明文件太旧了
     if (opts.startTime > 0) {
         if (record.mtime < opts.startTime) return false;
     }
 
-    if (opts.targetUid != -1) {
-        if (record.uid != static_cast<uint32_t>(opts.targetUid)) return false;
-    }
     return true;
 }
 
-// --- 算法 4: RLE ---
+// RLE
 void rleCompress(const std::vector<char>& input, std::vector<char>& output) {
     if (input.empty()) return;
     for (size_t i = 0; i < input.size(); ++i) {
@@ -120,7 +141,6 @@ void rleCompress(const std::vector<char>& input, std::vector<char>& output) {
     }
 }
 
-// --- 算法 5: RLE Decompress ---
 void rleDecompress(const std::vector<char>& input, std::vector<char>& output) {
     if (input.empty()) return;
     for (size_t i = 0; i < input.size(); i += 2) {
@@ -132,10 +152,10 @@ void rleDecompress(const std::vector<char>& input, std::vector<char>& output) {
 }
 
 // ==========================================
-// 业务逻辑
+// 业务逻辑 (Backup, Restore, Verify)
 // ==========================================
 
-// Legacy backup (简单复制)
+// 1. 基础备份 (支持单文件)
 void BackupEngine::backup(const std::string& srcPath, const std::string& destPath) {
     fs::path source = fs::u8path(srcPath);
     fs::path destination = fs::u8path(destPath);
@@ -146,108 +166,142 @@ void BackupEngine::backup(const std::string& srcPath, const std::string& destPat
     std::ofstream indexFile(destination / "index.txt");
     if (!indexFile.is_open()) throw std::runtime_error("Cannot create index file");
 
-    for (const auto& entry : fs::recursive_directory_iterator(source)) {
-        try {
-            fs::path relativePath = fs::relative(entry.path(), source);
-            fs::path targetPath = destination / relativePath;
+    std::cout << "Scanning and backing up..." << std::endl;
+    int successCount = 0;
 
+    auto processOneFile = [&](const fs::path& filePath, const fs::path& relPath) {
+        fs::path targetPath = destination / relPath;
+        if (targetPath.has_parent_path()) fs::create_directories(targetPath.parent_path());
+        fs::copy_file(filePath, targetPath, fs::copy_options::overwrite_existing);
+
+        // 使用 path 传递给 CRC32
+        std::string checksum = CRC32::getFileCRC(filePath);
+        indexFile << pathToString(relPath) << "|" << checksum << "\n";
+
+        std::cout << "  [OK] " << relPath.string() << std::endl;
+        successCount++;
+    };
+
+    if (fs::is_regular_file(source)) {
+        processOneFile(source, source.filename());
+    } else if (fs::is_directory(source)) {
+        for (const auto& entry : fs::recursive_directory_iterator(source)) {
+            try {
+                fs::path relativePath = fs::relative(entry.path(), source);
+                if (fs::is_directory(entry.path())) {
+                    fs::create_directories(destination / relativePath);
+                } else {
+                    processOneFile(entry.path(), relativePath);
+                }
+            } catch (...) {}
+        }
+    }
+    indexFile.close();
+    std::cout << "[Backup] Complete. Success: " << successCount << std::endl;
+}
+
+// 2. 基础校验 (返回 string 错误信息)
+std::string BackupEngine::verify(const std::string& destPath) {
+    fs::path destination = fs::u8path(destPath);
+    fs::path indexFilePath = destination / "index.txt";
+
+    if (!fs::exists(indexFilePath)) return "错误：找不到 index.txt 索引文件";
+
+    std::ifstream indexFile(indexFilePath);
+    std::string line;
+    std::stringstream errorMsg;
+    int errorCount = 0;
+
+    while (std::getline(indexFile, line)) {
+        if (line.empty()) continue;
+        size_t delimiterPos = line.find('|');
+        if (delimiterPos == std::string::npos) continue;
+
+        std::string relPath = line.substr(0, delimiterPos);
+        std::string expectedCRC = line.substr(delimiterPos + 1);
+        fs::path currentFile = destination / fs::u8path(relPath);
+
+        try {
+            if (!fs::exists(currentFile)) {
+                errorMsg << "❌ 丢失: " << relPath << "\n";
+                errorCount++;
+                continue;
+            }
+            std::string actualCRC = CRC32::getFileCRC(currentFile);
+            if (actualCRC != expectedCRC) {
+                errorMsg << "❌ 篡改: " << relPath << "\n";
+                errorCount++;
+            }
+        } catch (...) { errorCount++; }
+    }
+    return (errorCount > 0) ? errorMsg.str() : "";
+}
+
+// 3. 基础恢复
+void BackupEngine::restore(const std::string& srcPath, const std::string& destPath) {
+    const fs::path backupDir = fs::u8path(srcPath);
+    const fs::path targetDir = fs::u8path(destPath);
+    if (!fs::exists(targetDir)) fs::create_directories(targetDir);
+
+    for (const auto& entry : fs::recursive_directory_iterator(backupDir)) {
+        try {
+            fs::path relativePath = fs::relative(entry.path(), backupDir);
+            if (relativePath.filename() == "index.txt") continue;
+
+            fs::path targetPath = targetDir / relativePath;
             if (fs::is_directory(entry.path())) {
                 fs::create_directories(targetPath);
             } else {
                 fs::copy_file(entry.path(), targetPath, fs::copy_options::overwrite_existing);
-                std::string checksum = CRC32::getFileCRC(entry.path().string());
-                indexFile << pathToString(relativePath) << "|" << checksum << "\n";
             }
         } catch (...) {}
     }
-    indexFile.close();
 }
 
-// Legacy verify
-bool BackupEngine::verify(const std::string& destPath) {
-    return true; // 简化处理，重点在 Pack/Unpack
-}
+// ==========================================
+// 4. 高级打包
+// ==========================================
 
-// Legacy restore
-void BackupEngine::restore(const std::string& srcPath, const std::string& destPath) {
-    // 省略，重点在 unpack
-}
-
-// === 目录遍历 (强制 UTF-8) ===
 std::vector<FileRecord> BackupEngine::scanDirectory(const std::string& sourcePath, const FilterOptions& filter) {
     std::vector<FileRecord> files;
-
-    // 1. 解析 UTF-8 路径
     fs::path source = fs::u8path(sourcePath);
 
     if (!fs::exists(source)) return files;
 
-    // 2. 单文件处理
+    // 单文件
     if (fs::is_regular_file(source)) {
         FileRecord record;
-        // 🔥 关键修改：强制转为 UTF-8 字符串存储 🔥
         record.absPath = pathToString(source);
         record.relPath = pathToString(source.filename());
-
         record.type = FileType::REGULAR;
-        record.size = fs::file_size(source);
 
-        struct stat st{};
-        // 注意：stat 在 Windows 接收 char* 时是 GBK，这里可能会有问题
-        // 但我们没有 _wstat 的简单跨平台封装，暂时先尝试用 u8path 打开
-        // 如果 stat 失败，元数据可能为 0，但不影响文件内容读取
-        if (stat(record.absPath.c_str(), &st) == 0) {
-            record.mode = st.st_mode; record.mtime = st.st_mtime;
-            record.uid = st.st_uid; record.gid = st.st_gid;
-        } else {
-            // 尝试用 u8path 转换后的 wide string 也是一种办法，但略繁琐
-            // 这里为了作业简单，如果 stat 失败就赋当前时间
-            record.mtime = time(nullptr);
-        }
+        // 🔥 调用新的元数据获取逻辑
+        fillMetadata(source, record);
 
         if (checkFilter(record, filter)) files.push_back(record);
         return files;
     }
 
-    // 3. 目录处理
+    // 目录
     if (fs::is_directory(source)) {
         for (const auto& entry : fs::recursive_directory_iterator(source)) {
             FileRecord record;
-
-            // 🔥 关键修改：路径全部强制存为 UTF-8 🔥
-            // 这样在 packFiles 里我们就能确信它是 UTF-8，然后用 fs::u8path 打开
             record.absPath = pathToString(entry.path());
             record.relPath = pathToString(fs::relative(entry.path(), source));
 
-            // 获取元数据
-            struct stat st{};
-            // stat 在 Windows 上比较弱，如果含有特殊字符可能失败
-            // 这里我们做一个 fallback
-            if (stat(record.absPath.c_str(), &st) == 0) {
-                record.mode = st.st_mode; record.mtime = st.st_mtime;
-                record.uid = st.st_uid; record.gid = st.st_gid;
-            } else {
-                // 如果 stat 读不到，尝试用 C++ filesystem API 获取时间
-                try {
-                    auto ftime = fs::last_write_time(entry);
-                    auto sctp = std::chrono::time_point_cast<std::chrono::seconds>(ftime);
-                    record.mtime = sctp.time_since_epoch().count();
-                } catch (...) { record.mtime = 0; }
-            }
+            // 🔥 调用新的元数据获取逻辑
+            fillMetadata(entry.path(), record);
 
             if (fs::is_regular_file(entry.path())) {
                 record.type = FileType::REGULAR;
-                record.size = entry.file_size();
             } else if (fs::is_directory(entry.path())) {
                 record.type = FileType::DIRECTORY;
+                record.size = 0;
             } else if (fs::is_symlink(entry.path())) {
                 record.type = FileType::SYMLINK;
-                try {
-                    record.linkTarget = pathToString(fs::read_symlink(entry.path()));
-                } catch (...) {}
-            } else {
-                continue;
-            }
+                record.size = 0;
+                try { record.linkTarget = pathToString(fs::read_symlink(entry.path())); } catch (...) {}
+            } else { continue; }
 
             if (checkFilter(record, filter)) files.push_back(record);
         }
@@ -255,18 +309,17 @@ std::vector<FileRecord> BackupEngine::scanDirectory(const std::string& sourcePat
     return files;
 }
 
-// === 打包实现 ===
+// 打包 Files
 void BackupEngine::packFiles(const std::vector<FileRecord>& files, const std::string& outputFile,
                              const std::string& password, EncryptionMode encMode, CompressionMode compMode) {
 
-    // 输出文件：UTF-8 -> u8path -> correctly opened
     std::ofstream out(fs::u8path(outputFile), std::ios::binary);
     if (!out.is_open()) throw std::runtime_error("Cannot create pack file");
 
-    // Header ...
     if (encMode == EncryptionMode::RC4) out.write("MINIBK_R", 8);
     else if (encMode == EncryptionMode::XOR) out.write("MINIBK_X", 8);
     else out.write("MINIBK10", 8);
+
     char compFlag = (compMode == CompressionMode::RLE) ? 1 : 0;
     out.write(&compFlag, 1);
 
@@ -277,32 +330,28 @@ void BackupEngine::packFiles(const std::vector<FileRecord>& files, const std::st
     for (const auto& rec : files) {
         if (rec.type == FileType::OTHER) continue;
 
-        // A. 准备数据
         std::vector<char> fileData;
         if (rec.type == FileType::REGULAR) {
-            // 🔥🔥🔥 终极修复：因为 rec.absPath 已经是 UTF-8 了，所以必须用 u8path 打开 🔥🔥🔥
-            // 之前的错误在于：rec.absPath 是 UTF-8，但用了 fs::path(rec.absPath)，
-            // 在 Windows 上 fs::path(string) 认为输入是 ANSI/GBK，导致乱码路径，进而打开失败
             std::ifstream inFile(fs::u8path(rec.absPath), std::ios::binary);
-
             if (inFile) {
                 fileData.assign(std::istreambuf_iterator<char>(inFile), std::istreambuf_iterator<char>());
-            } else {
-                std::cerr << "[Warning] Failed to open: " << rec.absPath << std::endl;
             }
         } else if (rec.type == FileType::SYMLINK) {
             std::string target = rec.linkTarget;
             fileData.assign(target.begin(), target.end());
         }
 
-        // RLE ...
         if (compMode == CompressionMode::RLE && !fileData.empty()) {
             std::vector<char> compressed;
             rleCompress(fileData, compressed);
             fileData = compressed;
         }
 
-        // B. 写入 Meta
+        uint32_t fileCRC = 0;
+        if (!fileData.empty()) {
+            fileCRC = CRC32::calculate(fileData.data(), fileData.size());
+        }
+
         std::vector<char> metaBuffer;
         uint8_t typeCode = (rec.type == FileType::REGULAR ? 1 : (rec.type == FileType::DIRECTORY ? 2 : 3));
         metaBuffer.push_back(static_cast<char>(typeCode));
@@ -316,7 +365,9 @@ void BackupEngine::packFiles(const std::vector<FileRecord>& files, const std::st
         auto pSize = reinterpret_cast<const char*>(&finalSize);
         metaBuffer.insert(metaBuffer.end(), pSize, pSize + 8);
 
-        // Metadata
+        auto pCRC = reinterpret_cast<const char*>(&fileCRC);
+        metaBuffer.insert(metaBuffer.end(), pCRC, pCRC + 4);
+
         auto pMode = reinterpret_cast<const char*>(&rec.mode);
         metaBuffer.insert(metaBuffer.end(), pMode, pMode + 4);
         auto pUid = reinterpret_cast<const char*>(&rec.uid);
@@ -326,12 +377,10 @@ void BackupEngine::packFiles(const std::vector<FileRecord>& files, const std::st
         auto pTime = reinterpret_cast<const char*>(&rec.mtime);
         metaBuffer.insert(metaBuffer.end(), pTime, pTime + 8);
 
-        // 加密 Meta
         if (encMode == EncryptionMode::RC4 && !password.empty()) rc4.cipher(metaBuffer.data(), metaBuffer.size());
         else if (encMode == EncryptionMode::XOR && !password.empty()) xorEncrypt(metaBuffer.data(), metaBuffer.size(), password);
         out.write(metaBuffer.data(), metaBuffer.size());
 
-        // C. 写入数据
         if (!fileData.empty()) {
             if (encMode == EncryptionMode::RC4 && !password.empty()) rc4.cipher(fileData.data(), fileData.size());
             else if (encMode == EncryptionMode::XOR && !password.empty()) xorEncrypt(fileData.data(), fileData.size(), password);
@@ -350,7 +399,7 @@ void BackupEngine::pack(const std::string& srcPath, const std::string& outputFil
     packFiles(files, outputFile, password, encMode, compMode);
 }
 
-// === 解包实现 ===
+// 解包
 void BackupEngine::unpack(const std::string& packFile, const std::string& destPath, const std::string& password) {
     std::ifstream in(fs::u8path(packFile), std::ios::binary);
     if (!in.is_open()) throw std::runtime_error("Cannot open pack file");
@@ -374,13 +423,7 @@ void BackupEngine::unpack(const std::string& packFile, const std::string& destPa
     RC4 rc4;
     if (encMode == EncryptionMode::RC4) rc4.init(password);
 
-    std::cout << "[Unpack] Enc: " << static_cast<int>(encMode) << ", Comp: " << (isRLE ? "RLE" : "None") << std::endl;
-
     while (in.peek() != EOF) {
-        // Meta 读取流程保持不变 (Read -> Decrypt -> Parse)
-        // ... (省略重复的读取代码，逻辑与之前完全一致)
-
-        // 简写：
         char typeBuf[1]; in.read(typeBuf, 1);
         if (in.gcount() == 0) break;
         if (encMode == EncryptionMode::RC4) rc4.cipher(typeBuf, 1);
@@ -403,7 +446,11 @@ void BackupEngine::unpack(const std::string& packFile, const std::string& destPa
         else if (encMode == EncryptionMode::XOR) xorEncrypt(sizeBuf, 8, password);
         uint64_t dataSize = *reinterpret_cast<uint64_t*>(sizeBuf);
 
-        // Metadata block (20 bytes)
+        char crcBuf[4]; in.read(crcBuf, 4);
+        if (encMode == EncryptionMode::RC4) rc4.cipher(crcBuf, 4);
+        else if (encMode == EncryptionMode::XOR) xorEncrypt(crcBuf, 4, password);
+        uint32_t expectedCRC = *reinterpret_cast<uint32_t*>(crcBuf);
+
         char metaBlock[20]; in.read(metaBlock, 20);
         if (encMode == EncryptionMode::RC4) rc4.cipher(metaBlock, 20);
         else if (encMode == EncryptionMode::XOR) xorEncrypt(metaBlock, 20, password);
@@ -413,13 +460,18 @@ void BackupEngine::unpack(const std::string& packFile, const std::string& destPa
         uint32_t f_gid  = *reinterpret_cast<uint32_t*>(metaBlock + 8);
         int64_t f_mtime = *reinterpret_cast<int64_t*>(metaBlock + 12);
 
-        // Data
-        fs::path fullPath = destRoot / fs::u8path(relPath); // u8path 处理 UTF-8 相对路径
+        fs::path fullPath = destRoot / fs::u8path(relPath);
         std::vector<char> fileData(dataSize);
         if (dataSize > 0) {
             in.read(fileData.data(), dataSize);
             if (encMode == EncryptionMode::RC4) rc4.cipher(fileData.data(), dataSize);
             else if (encMode == EncryptionMode::XOR) xorEncrypt(fileData.data(), dataSize, password);
+
+            uint32_t actualCRC = CRC32::calculate(fileData.data(), dataSize);
+            if (actualCRC != expectedCRC) {
+                std::cerr << "[Error] CRC Mismatch: " << relPath << std::endl;
+            }
+
             if (isRLE) {
                 std::vector<char> dec;
                 rleDecompress(fileData, dec);
@@ -427,7 +479,6 @@ void BackupEngine::unpack(const std::string& packFile, const std::string& destPa
             }
         }
 
-        // Write
         if (typeCode == 2) {
             fs::create_directories(fullPath);
         } else if (typeCode == 3) {
@@ -437,25 +488,23 @@ void BackupEngine::unpack(const std::string& packFile, const std::string& destPa
             try { fs::create_symlink(target, fullPath); } catch(...) {}
         } else if (typeCode == 1) {
             if (fullPath.has_parent_path()) fs::create_directories(fullPath.parent_path());
-            // 使用 u8path 确保中文路径能创建
             std::ofstream outFile(fullPath, std::ios::binary);
             outFile.write(fileData.data(), fileData.size());
         }
 
-        // Restore Metadata
         try {
 #ifdef _WIN32
-            struct _utimbuf new_times{};
+            struct __utimbuf64 new_times{}; // 双下划线
             new_times.actime = f_mtime;
             new_times.modtime = f_mtime;
-            _utime(fullPath.string().c_str(), &new_times);
+            _wutime64(fullPath.c_str(), &new_times);
 #else
-            chmod(fullPath.string().c_str(), f_mode);
-            chown(fullPath.string().c_str(), f_uid, f_gid);
+            chmod(fullPath.c_str(), f_mode);
+            chown(fullPath.c_str(), f_uid, f_gid);
             struct utimbuf new_times{};
             new_times.actime = f_mtime;
             new_times.modtime = f_mtime;
-            utime(fullPath.string().c_str(), &new_times);
+            utime(fullPath.c_str(), &new_times);
 #endif
         } catch (...) {}
     }

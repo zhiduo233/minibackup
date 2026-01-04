@@ -38,7 +38,7 @@ mode = 0       # 0=None
 
 # 5. 【核心】构造筛选器：只备份包含 ".txt" 的文件
 my_filter = CFilter()
-my_filter.nameContains = b".txt"
+my_filter.nameContains = b""
 my_filter.pathContains = None
 my_filter.type = -1
 my_filter.minSize = 0
