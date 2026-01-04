@@ -88,7 +88,7 @@ public:
 
 private:
     // 内部辅助函数
-    static std::vector<FileRecord> scanDirectory(const std::string& srcPath, const FilterOptions& filter);
+    static std::vector<FileRecord> scanDirectory(const std::string& sourcePath, const FilterOptions& filter);
     static void packFiles(const std::vector<FileRecord>& files, const std::string& outputFile,
                           const std::string& password, EncryptionMode encMode,
                           CompressionMode compMode);
