@@ -198,7 +198,7 @@ class MiniBackupVideoDemo:
         self.combo_algo.current(2); self.combo_algo.pack(side=tk.LEFT)
 
         self.var_compress = tk.BooleanVar(value=True)
-        ttk.Checkbutton(lf3, text="启用 RLE 无损压缩", variable=self.var_compress).pack(anchor="w", padx=5)
+        ttk.Checkbutton(lf3, text="启用 Huffman 压缩", variable=self.var_compress).pack(anchor="w", padx=5)
 
         # 4. 高级筛选 (Grid 布局重构)
         lf4 = ttk.LabelFrame(left, text=" 4. 智能筛选规则 "); lf4.pack(fill=tk.X, pady=5)
@@ -460,7 +460,7 @@ class MiniBackupVideoDemo:
             return
 
         enc = self.combo_algo.current()
-        comp = 1 if self.var_compress.get() else 0
+        comp = 2 if self.var_compress.get() else 0
 
         # 构造 CFilter
         f = CFilter()

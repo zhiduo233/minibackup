@@ -29,10 +29,23 @@ class TestMiniBackup(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         print("\n[Setup] Loading Core Library...")
-        # 自动查找 DLL/SO
+
+        # 1. 获取当前脚本所在的目录 (即 tests 文件夹的绝对路径)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # 2. 获取项目根目录 (tests 的上一级)
+        project_root = os.path.dirname(current_dir)
+
+        print(f"   [Debug] Project Root identified as: {project_root}")
+
+        # 3. 在项目根目录下的常见构建位置寻找 DLL
         lib_names = ["core.dll", "libcore.dll", "libcore.so", "libcore.dylib"]
         search_paths = [
-            "./cmake-build-debug", "./build_win", "./build", "."
+            os.path.join(project_root, "cmake-build-debug"),
+            os.path.join(project_root, "build_win"),
+            os.path.join(project_root, "build"),
+            project_root, # 根目录本身
+            os.path.join(project_root, "bin") # 为了配合刚才建议的提交结构
         ]
 
         cls.lib = None
@@ -42,13 +55,19 @@ class TestMiniBackup(unittest.TestCase):
                 full_path = os.path.join(p, name)
                 if os.path.exists(full_path):
                     lib_path = os.path.abspath(full_path)
+                    print(f"   [Debug] Found library at: {lib_path}")
                     break
             if lib_path: break
 
         if not lib_path:
+            # 打印搜索路径方便调试
+            print(f"   [Error] Searched in: {search_paths}")
             raise RuntimeError("Cannot find core library! Please build first.")
 
-        cls.lib = ctypes.cdll.LoadLibrary(lib_path)
+        try:
+            cls.lib = ctypes.cdll.LoadLibrary(lib_path)
+        except OSError as e:
+            raise RuntimeError(f"Found library but failed to load: {e}")
 
         # 设置函数参数类型
         cls.lib.C_PackWithFilter.argtypes = [
@@ -59,7 +78,12 @@ class TestMiniBackup(unittest.TestCase):
 
     # [每个测试前] 准备干净的临时目录
     def setUp(self):
-        self.test_dir = "temp_test_env"
+        # 同样使用绝对路径，确保临时文件夹生成在项目根目录下，而不是 tests 目录下
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+
+        self.test_dir = os.path.join(project_root, "temp_test_env")
+
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
         os.makedirs(self.test_dir)
@@ -72,7 +96,7 @@ class TestMiniBackup(unittest.TestCase):
     # [每个测试后] 清理垃圾
     def tearDown(self):
         """
-        # 为了调试方便，如果你想看失败现场，可以注释掉这行
+        # 为了调试方便，如果想看现场，可以注释掉这行
         if os.path.exists(self.test_dir):
             try:
                 shutil.rmtree(self.test_dir)

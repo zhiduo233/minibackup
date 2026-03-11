@@ -75,10 +75,11 @@ extern "C" {
 
             auto cppComp = CompressionMode::NONE;
             if (compMode == 1) cppComp = CompressionMode::RLE;
+            else if (compMode == 2) cppComp = CompressionMode::HUFFMAN;
 
             FilterOptions opts;
             if (c_filter) {
-                // 打印调试信息，看看 C++ 到底收到了什么
+                // 打���调试信息，看看 C++ 到底收到了什么
                 std::cout << "接收筛选器配置:" << std::endl;
 
                 if (c_filter->nameContains) {

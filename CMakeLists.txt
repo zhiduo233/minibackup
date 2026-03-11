@@ -1,9 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
 project(minibackup)
 
+# 必须开启 C++17 (为了 std::filesystem)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# [针对 Windows MinGW 的配置]
+# 静态链接标准库，防止生成的 exe 只有几 KB 且无法运行
 if(MINGW)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libgcc -static-libstdc++")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-libgcc -static-libstdc++ -static")
@@ -13,30 +16,30 @@ endif()
 include_directories(include)
 
 # ==========================================
-# 1. 生成核心动态库 (给 Python 用)
+# 1. 生成核心动态库 (给 Python GUI 用)
 # ==========================================
 add_library(core SHARED
         src/BackupEngine.cpp
         src/Bridge.cpp
-        include/BackupEngine.h
-        include/CRC32.h
+        src/Huffman.cpp
 )
+# 显式开启位置无关代码 (fPIC)，这对 Linux .so 是必须的
+set_property(TARGET core PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 # ==========================================
-# 2. 生成命令行工具 (minibackup)
+# 2. 生成命令行工具 (minibackup CLI)
 # ==========================================
-# [修改点]：把 BackupEngine.cpp 也加到这里！
-# 这样 exe 就自带核心逻辑，不需要去 dll 里找了，从而避开了 Windows 的导出问题。
+# 把 BackupEngine.cpp 编进去，让 exe 独立运行
 add_executable(minibackup
         src/main.cpp
         src/BackupEngine.cpp
-        include/BackupEngine.h
-        include/CRC32.h
+        src/Huffman.cpp
 )
 
-# [修改点]：去掉或者注释掉 target_link_libraries
-# 因为我们已经把源码编进去了，不需要再链接 core 库了
-# target_link_libraries(minibackup core)
+# Linux 下通常需要链接 pthread 库，防止链接错误
+if(UNIX)
+    target_link_libraries(minibackup pthread)
+endif()
 
-# 设置 RPATH (Linux下有用，Windows下无视)
-set_target_properties(minibackup PROPERTIES INSTALL_RPATH ".")
+# 设置输出提示
+message(STATUS "Build config ready. Run 'make' to compile.")

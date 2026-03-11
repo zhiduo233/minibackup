@@ -23,12 +23,15 @@ struct FileRecord {
     FileType type;          // 类型
     uint64_t size;          // 大小 (或链接长度)
     std::string linkTarget; // 软链接指向的目标
+    uint64_t rdev = 0; // 设备号
 
     // --- 元数据 ---
     uint32_t mode = 0;   // 权限
     int64_t mtime = 0;   // 修改时间 (时间戳)
     uint32_t uid = 0;    // 用户ID
     uint32_t gid = 0;    // 组ID
+
+
 };
 
 // [新增] 加密模式枚举
@@ -41,7 +44,8 @@ enum class EncryptionMode {
 // 压缩模式枚举
 enum class CompressionMode {
     NONE,
-    RLE
+    RLE,
+    HUFFMAN
 };
 
 struct FilterOptions {

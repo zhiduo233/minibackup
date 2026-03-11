@@ -64,3 +64,101 @@ minibackup/
 ├── Dockerfile            # 标准化编译环境
 └── README.md             # 说明文档
 ```
+
+## 3. 开始
+
+```
+ 1. 进入项目目录
+`cd minibackup`
+
+ 2. 创建构建目录
+`mkdir build && cd build`
+
+ 3. 生成 Makefile
+`cmake ..`
+
+ 4. 编译
+`make`
+
+ 编译完成后，build 目录下会生成：
+ - minibackup (可执行文件，用于命令行测试)
+ - libcore.so (动态库，用于 Python GUI)
+```
+
+### 1. 基础备份与恢复
+
+##### 备份目录 A 到 B (镜像模式)
+```./minibackup backup ./source_dir ./backup_dir```
+
+##### 恢复数据
+```./minibackup restore ./backup_dir ./restore_dir```
+
+### 2. 高级打包 (Pack)
+   支持加密、压缩和过滤器。
+
+语法: pack <src> <pck_file> [options]
+
+示例:
+
+```
+简单打包
+`./minibackup pack ./data output.pck`
+
+ 加密(RC4) + 压缩(RLE) + 密码
+./minibackup pack ./data secret.pck -rc4 -rle -pwd "mypassword"
+
+ [高级筛选]：只打包最近 3 天修改的、小于 10MB 的 .txt 文件
+./minibackup pack ./data filter.pck -name ".txt" -max 10485760 -days 3
+```
+
+参数说明:
+
+-rc4 / -xor: 启用加密算法。
+
+-rle: 启用压缩。
+
+-pwd <str>: 设置密码。
+
+-name <str> / -path <str>: 按名称或路径过滤。
+
+-min <bytes> / -max <bytes>: 按大小过滤。
+
+-days <n>: 仅备份最近 N 天修改的文件。
+
+### 3. 高级解包 (Unpack)
+语法: unpack <pck_file> <dest_dir> [pwd]
+
+# 解包 (如有密码需提供)
+```
+./minibackup unpack secret.pck ./output_dir -pwd "mypassword"
+```
+
+## 4. 演示：软连接和元数据之权限
+
+```
+docker run -it --rm --privileged -v "$(pwd):/usr/src/minibackup" minibackup_img /bin/bash
+```
+
+```
+rm -rf build && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make
+```
+
+```
+ls -lR demo_linux_src
+```
+
+```
+./build/minibackup pack demo_linux_src demo_linux.pck -rle
+```
+
+```
+./build/minibackup unpack demo_linux.pck demo_linux_restore
+```
+
+```
+python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('demo_linux_src/my_socket')"
+```

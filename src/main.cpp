@@ -27,6 +27,7 @@ void printUsage() {
               << "    -xor                 Use XOR encryption\n"
               << "    -rc4                 Use RC4 encryption\n"
               << "    -rle                 Enable RLE compression\n"
+              << "    -huff                Enable Huffman compression\n"
               << "    -name <str>          Filter by filename (contains)\n"
               << "    -path <str>          Filter by path (contains)\n"
               << "    -min <bytes>         Min file size\n"
@@ -102,6 +103,8 @@ int main(int argc, char* argv[]) {
                     enc = EncryptionMode::RC4;
                 } else if (arg == "-rle") {
                     comp = CompressionMode::RLE;
+                } else if (arg == "-huff") {
+                    comp = CompressionMode::HUFFMAN;
                 } else if (arg == "-name" && i + 1 < argc) {
                     filter.nameContains = argv[++i];
                 } else if (arg == "-path" && i + 1 < argc) {
@@ -120,7 +123,8 @@ int main(int argc, char* argv[]) {
 
             std::cout << "Packing " << src << " -> " << dest << " ..." << std::endl;
             if (enc != EncryptionMode::NONE) std::cout << "Encryption: Enabled" << std::endl;
-            if (comp != CompressionMode::NONE) std::cout << "Compression: RLE" << std::endl;
+            if (comp == CompressionMode::RLE) std::cout << "Compression: RLE" << std::endl;
+            else if (comp == CompressionMode::HUFFMAN) std::cout << "Compression: Huffman" << std::endl;
 
             BackupEngine::pack(src, dest, pwd, enc, filter, comp);
             std::cout << GREEN << "[SUCCESS] Pack created." << RESET << std::endl;
